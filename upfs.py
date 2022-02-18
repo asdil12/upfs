@@ -1,40 +1,24 @@
 #!/usr/bin/python3
 
-from rshell import pyboard
-pyb = pyboard.Pyboard("/dev/ttyACM0")
-
-
 import os
 import sys
 import errno
+import json
+import base64
+import stat
 
 from fuse import FUSE, FuseOSError, Operations, fuse_get_context
 
-import stat
-
-import json
-import base64
 import rshell
-
-def rcall(cmd):
-	pyb.exec('import os')
-	pyb.exec('import ujson')
-	return json.loads(pyb.eval('ujson.dumps(%s)' % cmd))
-
-def rcall_bin(cmd):
-	pyb.exec('import os')
-	pyb.exec('import ujson')
-	pyb.exec('import ubinascii')
-	return base64.decodebytes(bytes(
-		json.loads(
-			pyb.eval('ujson.dumps([ubinascii.b2a_base64(%s)])' % cmd)
-		)[0],
-	"ascii"))
+from rshell import pyboard
 
 class UPFS(Operations):
-	def __init__(self):
+	def __init__(self, device="/dev/ttyACM0"):
 		self.fds = set()
 		self.cache = {}
+		self.pyb = pyboard.Pyboard(device)
+		self.pyb.enter_raw_repl()
+		#pyb.exit_raw_repl()
 
 	# Helpers
 	# =======
@@ -51,6 +35,24 @@ class UPFS(Operations):
 			del self.cache[path]
 		except KeyError:
 			pass
+
+	def rcall(self, cmd):
+		self.pyb.exec('import os')
+		self.pyb.exec('import ujson')
+		return json.loads(self.pyb.eval('ujson.dumps(%s)' % cmd))
+
+	def rcall_bin(self, cmd):
+		self.pyb.exec('import os')
+		self.pyb.exec('import ujson')
+		self.pyb.exec('import ubinascii')
+		return base64.decodebytes(bytes(
+			json.loads(
+				self.pyb.eval('ujson.dumps([ubinascii.b2a_base64(%s)])' % cmd)
+			)[0],
+		"ascii"))
+	
+	def exec(self, cmd):
+		return self.pyb.exec(cmd)
 
 	# Filesystem methods
 	# ==================
@@ -85,7 +87,7 @@ class UPFS(Operations):
            S_IFIFO    0010000   FIFO
 		"""
 		try:
-			st = rcall("os.stat(%r)" % path)
+			st = self.rcall("os.stat(%r)" % path)
 			st[0] |= 0o755
 			if st[0] & stat.S_IFDIR:
 				st[6] = 4096
@@ -121,7 +123,7 @@ class UPFS(Operations):
 		#if os.path.isdir(full_path):
 		#	dirents.extend(os.listdir(full_path))
 		try:
-			entries = rcall("os.listdir(%r)" % path)
+			entries = self.rcall("os.listdir(%r)" % path)
 			print(entries)
 			dirents.extend(entries)
 		except:
@@ -150,16 +152,16 @@ class UPFS(Operations):
 	def rmdir(self, path):
 		print("rmdir: %s" % path)
 		self.invalidate_cache(path)
-		pyb.exec("os.rmdir(%r)" % path)
+		self.exec("os.rmdir(%r)" % path)
 
 	def mkdir(self, path, mode):
 		print("mkdir: %s" % path)
 		self.invalidate_cache(path)
-		pyb.exec("os.mkdir(%r)" % path)
+		self.exec("os.mkdir(%r)" % path)
 
 	def statfs(self, path):
 		print("statfs: %s" % path)
-		stv = rcall("os.statvfs(%r)" % path)
+		stv = self.rcall("os.statvfs(%r)" % path)
 		"""
 		   struct statvfs {
                unsigned long  f_bsize;    /* Filesystem block size */
@@ -193,7 +195,7 @@ class UPFS(Operations):
 	def unlink(self, path):
 		print("unlink: %s" % path)
 		self.invalidate_cache(path)
-		pyb.exec('os.remove(%r)' % path)
+		self.exec('os.remove(%r)' % path)
 
 	def symlink(self, name, target):
 		print("symlink: %s" % path)
@@ -203,7 +205,7 @@ class UPFS(Operations):
 	def rename(self, old, new):
 		print("rename: %s" % path)
 		self.invalidate_cache(path)
-		pyb.exec('os.rename(%r, %r)' % (old, new))
+		self.exec('os.rename(%r, %r)' % (old, new))
 
 	def link(self, target, name):
 		print("link: %s" % path)
@@ -235,7 +237,7 @@ class UPFS(Operations):
 		try:
 			fd = self._get_new_fd()
 			print("upfs_fd_%i = open(%r, %r)" % (fd, path, sf))
-			pyb.exec("upfs_fd_%i = open(%r, %r)" % (fd, path, sf))
+			self.exec("upfs_fd_%i = open(%r, %r)" % (fd, path, sf))
 		except Exception as e:
 			print(e)
 			raise FileNotFoundError()
@@ -247,74 +249,73 @@ class UPFS(Operations):
 		fd = self._get_new_fd()
 		sf = "wb"
 		print("upfs_fd_%i = open(%r, %r)" % (fd, path, sf))
-		pyb.exec("upfs_fd_%i = open(%r, %r)" % (fd, path, sf))
+		self.exec("upfs_fd_%i = open(%r, %r)" % (fd, path, sf))
 		return fd
 
 	def read(self, path, length, offset, fd):
 		print("read: %r (%i, %i)" % (path, length, offset))
 		self.invalidate_cache(path)
-		pyb.exec("upfs_fd_%i.seek(%i)" % (fd, offset))
+		self.exec("upfs_fd_%i.seek(%i)" % (fd, offset))
 		# transfer in small chunks due to limited memory on device
 		r = b""
 		chunk_size = 8192
 		for i in range(0, length, chunk_size):
 			bytes_to_transfer = min(chunk_size, length-i)
 			print("upfs_fd_%i.read(%i)" % (fd, bytes_to_transfer))
-			r += rcall_bin("upfs_fd_%i.read(%i)" % (fd, bytes_to_transfer))
+			r += self.rcall_bin("upfs_fd_%i.read(%i)" % (fd, bytes_to_transfer))
 		#print("%r" % r)
 		return r
 
 	def write(self, path, buf, offset, fd):
-		print("write %r: %r, %i" % (path, buf, offset))
+		print("write %r: %i, %i" % (path, len(buf), offset))
 		self.invalidate_cache(path)
-		bb = base64.encodebytes(buf)
-		pyb.exec('import ubinascii')
-		pyb.exec("upfs_fd_%i.seek(%i)" % (fd, offset))
-		pyb.exec("upfs_fd_%i.write(ubinascii.a2b_base64(%r))" % (fd, bb))
+		self.exec('import ubinascii')
+		self.exec("upfs_fd_%i.seek(%i)" % (fd, offset))
+		length = len(buf)
+		chunk_size = 8192
+		for i in range(0, length, chunk_size):
+			bb = base64.encodebytes(buf[i:min(chunk_size, length-i)])
+			self.exec("upfs_fd_%i.write(ubinascii.a2b_base64(%r))" % (fd, bb))
 		return len(buf)
 
 	def truncate(self, path, length, fd=None):
 		print("truncate %r" % path)
 		self.invalidate_cache(path)
 		tfd = self._get_new_fd()
-		pyb.exec("upfs_fd_%i = open(%r, 'rb')" % (tfd, path))
-		r = rcall_bin("upfs_fd_%i.read(%i)" % (tfd, length))
-		print(r)
+		self.exec("upfs_fd_%i = open(%r, 'rb')" % (tfd, path))
+		r = self.rcall_bin("upfs_fd_%i.read(%i)" % (tfd, length))
 		bb = base64.encodebytes(r)
 		if not fd:
-			pyb.exec("upfs_fd_%i = open(%r, 'wb')" % (tfd, path))
+			self.exec("upfs_fd_%i = open(%r, 'wb')" % (tfd, path))
 			fd = tfd
-		pyb.exec('import ubinascii')
-		pyb.exec("upfs_fd_%i.seek(0)" % fd)
-		pyb.exec("upfs_fd_%i.write(ubinascii.a2b_base64(%r))" % (fd, bb))
+		self.exec('import ubinascii')
+		self.exec("upfs_fd_%i.seek(0)" % fd)
+		self.exec("upfs_fd_%i.write(ubinascii.a2b_base64(%r))" % (fd, bb))
 		#if fd == tfd:
 		#	pyb.exec("upfs_fd_%i.flush()" % tfd)
-		pyb.exec("del upfs_fd_%i" % tfd)
+		self.exec("del upfs_fd_%i" % tfd)
 		self.fds.remove(tfd)
 
 	def flush(self, path, fd):
 		print("flush %r" % path)
 		self.invalidate_cache(path)
-		pyb.exec("upfs_fd_%i.flush()" % fd)
+		self.exec("upfs_fd_%i.flush()" % fd)
 
 	def release(self, path, fd):
-		print("release: %r" % path)
+		print("release: %r (%i)" % (path, fd))
 		self.invalidate_cache(path)
-		print("del upfs_fd_%i" % fd)
-		pyb.exec("del upfs_fd_%i" % fd)
+		self.exec("del upfs_fd_%i" % fd)
 		self.fds.remove(fd)
 
 	def fsync(self, path, fdatasync, fd):
 		print("fsync %r" % path)
 		self.invalidate_cache(path)
-		pyb.exec("upfs_fd_%i.flush()" % fd)
+		self.exec("upfs_fd_%i.flush()" % fd)
 
 
 def main(mountpoint):
-	pyb.enter_raw_repl()
-	u = UPFS()
+	u = UPFS("/dev/ttyACM0") # or ip of telnet device
 	FUSE(u, mountpoint, nothreads=True, foreground=True)
-	pyb.exit_raw_repl()
 
 
 if __name__ == '__main__':
