@@ -203,8 +203,9 @@ class UPFS(Operations):
 		raise FuseOSError(errno.EINVAL)
 
 	def rename(self, old, new):
-		print("rename: %s" % path)
-		self.invalidate_cache(path)
+		print("rename: %s -> %s" % (old, new))
+		self.invalidate_cache(old)
+		self.invalidate_cache(new)
 		self.exec('os.rename(%r, %r)' % (old, new))
 
 	def link(self, target, name):
