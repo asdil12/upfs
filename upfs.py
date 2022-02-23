@@ -13,12 +13,13 @@ import rshell
 from rshell import pyboard
 
 class UPFS(Operations):
-	def __init__(self, device="/dev/ttyACM0"):
+	def __init__(self, pyb):
 		self.fds = set()
 		self.cache = {}
-		self.pyb = pyboard.Pyboard(device)
-		self.pyb.enter_raw_repl()
-		#pyb.exit_raw_repl()
+		self.pyb = pyb
+		self.pyb.exec('import os')
+		self.pyb.exec('import ujson')
+		self.pyb.exec('import ubinascii')
 
 	# Helpers
 	# =======
@@ -37,14 +38,14 @@ class UPFS(Operations):
 			pass
 
 	def rcall(self, cmd):
-		self.pyb.exec('import os')
-		self.pyb.exec('import ujson')
+		#self.pyb.exec('import os')
+		#self.pyb.exec('import ujson')
 		return json.loads(self.pyb.eval('ujson.dumps(%s)' % cmd))
 
 	def rcall_bin(self, cmd):
-		self.pyb.exec('import os')
-		self.pyb.exec('import ujson')
-		self.pyb.exec('import ubinascii')
+		#self.pyb.exec('import os')
+		#self.pyb.exec('import ujson')
+		#self.pyb.exec('import ubinascii')
 		return base64.decodebytes(bytes(
 			json.loads(
 				self.pyb.eval('ujson.dumps([ubinascii.b2a_base64(%s)])' % cmd)
@@ -162,34 +163,17 @@ class UPFS(Operations):
 	def statfs(self, path):
 		print("statfs: %s" % path)
 		stv = self.rcall("os.statvfs(%r)" % path)
-		"""
-		   struct statvfs {
-               unsigned long  f_bsize;    /* Filesystem block size */
-               unsigned long  f_frsize;   /* Fragment size */
-               fsblkcnt_t     f_blocks;   /* Size of fs in f_frsize units */
-               fsblkcnt_t     f_bfree;    /* Number of free blocks */
-               fsblkcnt_t     f_bavail;   /* Number of free blocks for
-                                             unprivileged users */
-               fsfilcnt_t     f_files;    /* Number of inodes */
-               fsfilcnt_t     f_ffree;    /* Number of free inodes */
-               fsfilcnt_t     f_favail;   /* Number of free inodes for
-                                             unprivileged users */
-               unsigned long  f_fsid;     /* Filesystem ID */
-               unsigned long  f_flag;     /* Mount flags */
-               unsigned long  f_namemax;  /* Maximum filename length */
-           };
-		"""
 		return {
-			'f_bsize': stv[0],
-			'f_frsize': stv[1],
-			'f_blocks': stv[2],
-			'f_bfree': stv[3],
-			'f_bavail': stv[4],
-			'f_files': stv[5],
-			'f_ffree': stv[6],
-			'f_favail': stv[7],
-			'f_flag': stv[8],
-			'f_namemax': stv[9],
+			'f_bsize': stv[0],   # Filesystem block size
+			'f_frsize': stv[1],  # Fragment size
+			'f_blocks': stv[2],  # Size of fs in f_frsize units
+			'f_bfree': stv[3],   # Number of free blocks
+			'f_bavail': stv[4],  # Number of free blocks for unprivileged users
+			'f_files': stv[5],   # Number of inodes
+			'f_ffree': stv[6],   # Number of free inodes
+			'f_favail': stv[7],  # Number of free inodes for unprivileged users
+			'f_flag': stv[8],    # Mount flags
+			'f_namemax': stv[9], # Maximum filename length
 		}
 
 	def unlink(self, path):
@@ -270,7 +254,7 @@ class UPFS(Operations):
 	def write(self, path, buf, offset, fd):
 		print("write %r: %i, %i" % (path, len(buf), offset))
 		self.invalidate_cache(path)
-		self.exec('import ubinascii')
+		#self.exec('import ubinascii')
 		self.exec("upfs_fd_%i.seek(%i)" % (fd, offset))
 		length = len(buf)
 		chunk_size = 8192
@@ -289,7 +273,7 @@ class UPFS(Operations):
 		if not fd:
 			self.exec("upfs_fd_%i = open(%r, 'wb')" % (tfd, path))
 			fd = tfd
-		self.exec('import ubinascii')
+		#self.exec('import ubinascii')
 		self.exec("upfs_fd_%i.seek(0)" % fd)
 		self.exec("upfs_fd_%i.write(ubinascii.a2b_base64(%r))" % (fd, bb))
 		#if fd == tfd:
@@ -313,11 +297,13 @@ class UPFS(Operations):
 		self.invalidate_cache(path)
 		self.exec("upfs_fd_%i.flush()" % fd)
 
-
-def main(mountpoint):
-	u = UPFS("/dev/ttyACM0") # or ip of telnet device
-	FUSE(u, mountpoint, nothreads=True, foreground=True)
-
-
 if __name__ == '__main__':
-	main(sys.argv[1])
+	device = sys.argv[1] # tty dev node or ip of telnet device
+	mountpoint = sys.argv[2]
+	pyb = pyboard.Pyboard(device)
+	try:
+		pyb.enter_raw_repl()
+		u = UPFS(pyb)
+		FUSE(u, mountpoint, nothreads=True, foreground=True)
+	finally:
+		pyb.exit_raw_repl()
