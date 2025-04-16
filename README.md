@@ -1,3 +1,6 @@
+> [!WARNING]
+> Moved to https://codeberg.org/asdil12/upfs
+
 # Micropython FUSE filesystem
 
 This tool allows to mount the storage of a micropython device via FUSE.
